@@ -1,0 +1,39 @@
+[project]
+name = "typed-decisions"
+version = "0.1.0"
+description = "Fast, calibrated typed decisions (choice, score, yes/no) from open-weights models"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [{name = "Shrinidhi Suresha"}]
+requires-python = ">=3.11"
+keywords = ["llm", "classification", "calibration", "few-shot", "embeddings", "mlx", "self-hosted"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["httpx>=0.27"]
+
+# Flavours: pick the one for your hardware. cpu and cuda share dependencies; for CUDA,
+# install torch from the CUDA wheel index first (see README).
+[project.optional-dependencies]
+cpu = ["torch>=2.2", "transformers>=4.40"]
+cuda = ["torch>=2.2", "transformers>=4.40"]
+apple = ["mlx-lm>=0.31", "torch>=2.2", "transformers>=4.40"]   # Apple silicon: MLX + retriever
+train = ["torch>=2.2", "transformers>=4.40"]                    # distillation heads
+local = ["torch>=2.2", "transformers>=4.40"]                    # older name for cpu
+mlx = ["mlx-lm>=0.31"]                                          # older name, MLX only
+dev = ["pytest>=8"]
+
+[project.scripts]
+typed-decisions = "typed_decisions.cli:main"
+
+[project.urls]
+Repository = "https://github.com/shrinidhisuresha/typed-decisions"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["typed_decisions*"]

@@ -1,0 +1,3 @@
+- [ ] Tests added or updated; `pytest -m "not slow"` passes
+- [ ] Claims of better or faster come with a script and numbers
+- [ ] No private data, keys or credentials
