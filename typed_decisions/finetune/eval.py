@@ -45,7 +45,12 @@ def predictions(client: Decider, task, rows) -> list[Prediction]:
                        r.label) for r in rows]
 
 
-def backend(base: str, adapter: str | None, device: str) -> TransformersBackend:
+def backend(base: str, adapter: str | None, device: str, kind: str = "transformers"):
+    if kind == "mlx":
+        from mlx_lm import load as mlx_load
+        from ..backend_impls.mlx import MLXBackend
+        model, tokenizer = mlx_load(base, adapter_path=adapter)
+        return MLXBackend(model, tokenizer)
     model = AutoModelForCausalLM.from_pretrained(base, dtype=torch.bfloat16)
     if adapter:
         from peft import PeftModel
@@ -66,6 +71,7 @@ def main(argv=None) -> None:
     parser.add_argument("--tasks", default=",".join(PER_CLASS))
     parser.add_argument("--configs", default="raw,posthoc,tuned")
     parser.add_argument("--device")
+    parser.add_argument("--backend", choices=["transformers", "mlx"], default="transformers")
     parser.add_argument("--dists", default="data/finetune_dists")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
@@ -77,15 +83,17 @@ def main(argv=None) -> None:
     dists = Path(args.dists)
     dists.mkdir(parents=True, exist_ok=True)
     tag = Path(args.adapter).name if args.adapter else "base"
+    # Baselines are per base model: 0.8B and 4B results must never share a cache file.
+    base_tag = f"base-{Path(args.base).name}"
 
     results: dict[str, dict[str, dict]] = {}
     for config in configs:
-        b = backend(args.base, args.adapter if config == "tuned" else None, device)
+        b = backend(args.base, args.adapter if config == "tuned" else None, device, args.backend)
         client = Decider(b, calibration=CONFIGS[config])
         for name in args.tasks.split(","):
             task = TASKS[name]
             train, test = split(load(name, PER_CLASS.get(name, 20)))
-            path = dists / f"{name}-{config}-{tag if config == 'tuned' else 'base'}.json"
+            path = dists / f"{name}-{config}-{tag if config == 'tuned' else base_tag}.json"
             if path.exists():
                 cached = json.loads(path.read_text())
                 fit_on = [Prediction(**p) for p in cached["train"]]
@@ -103,7 +111,7 @@ def main(argv=None) -> None:
             print(f"{name:18s} {config:8s} {report(held).summary()}  | T={t:.3f} "
                   f"{report(held, temperature=t).summary()}", flush=True)
         del client, b
-        if device == "mps":
+        if device == "mps" and args.backend == "transformers":
             torch.mps.empty_cache()
 
     lines = [f"# Outcome-calibrated fine-tuning: {args.base}", "",

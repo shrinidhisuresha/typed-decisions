@@ -21,7 +21,7 @@ from ..backend_impls.transformers import _HFTokenizer, best_device
 from ..benchmarks import TASKS, load
 from .data import Encoded, build, build_mixture, encode
 from .sources import MIXTURES
-from .loss import log_score, restricted_log_probs
+from .loss import log_score, ordinal_rps, restricted_log_probs
 
 LORA_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "in_proj_qkv", "out_proj",
                 "gate_proj", "up_proj", "down_proj"]
@@ -47,7 +47,7 @@ def collate(batch: list[Encoded], pad_id: int, device: str):
     return [t.to(device) for t in (ids, attn, last, labels, mask, target)]
 
 
-def batch_loss(model, batch, pad_id: int, device: str) -> torch.Tensor:
+def batch_loss(model, batch, pad_id: int, device: str, rps_weight: float = 0.0) -> torch.Tensor:
     ids, attn, last, labels, mask, target = collate(batch, pad_id, device)
     inner = model.get_base_model()
     hidden = inner.model(input_ids=ids, attention_mask=attn).last_hidden_state
@@ -55,7 +55,10 @@ def batch_loss(model, batch, pad_id: int, device: str) -> torch.Tensor:
     # would dominate memory for no benefit.
     logits = inner.lm_head(hidden[torch.arange(len(batch), device=device), last])
     logp = restricted_log_probs(logits, labels, mask)
-    return log_score(logp, target, mask).mean()
+    loss = log_score(logp, target, mask)
+    if rps_weight:
+        loss = loss + rps_weight * ordinal_rps(logp, target, [e.ordinal for e in batch])
+    return loss.mean()
 
 
 def main(argv=None) -> None:
@@ -67,6 +70,8 @@ def main(argv=None) -> None:
     parser.add_argument("--mixture", choices=sorted(MIXTURES),
                         help="train on several sources and question shapes instead of --task")
     parser.add_argument("--scale", type=float, default=1.0, help="multiply every per-class count")
+    parser.add_argument("--rps-weight", type=float, default=0.0,
+                        help="add this times RPS on Score rows (ordinal-aware, also proper)")
     parser.add_argument("--per-class", type=int, default=30)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch", type=int, default=8)
@@ -136,7 +141,8 @@ def main(argv=None) -> None:
             loss = 0.0
             for m in range(0, len(rows), args.micro_batch):
                 part = rows[m:m + args.micro_batch]
-                micro = batch_loss(model, part, pad_id, device) * len(part) / len(rows)
+                micro = (batch_loss(model, part, pad_id, device, args.rps_weight)
+                         * len(part) / len(rows))
                 micro.backward()
                 loss += micro.detach()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -156,7 +162,7 @@ def main(argv=None) -> None:
 
     model.save_pretrained(out)
     (out / "train.json").write_text(json.dumps({
-        "base": args.base, "task": args.task, "mixture": args.mixture, "scale": args.scale, "per_class": args.per_class, "rows": len(rows),
+        "base": args.base, "task": args.task, "mixture": args.mixture, "scale": args.scale, "rps_weight": args.rps_weight, "per_class": args.per_class, "rows": len(rows),
         "epochs": args.epochs, "batch": args.batch, "micro_batch": args.micro_batch, "lr": args.lr, "rank": args.rank,
         "noul_share": args.noul_share, "null_share": args.null_share, "seed": args.seed,
         "steps": step, "seconds": round(time.perf_counter() - start, 1), "loss": history,

@@ -29,3 +29,16 @@ def ranked_probability_score(probs: torch.Tensor, target: torch.Tensor) -> torch
     """RPS for ordinal answers (Score): squared error between cumulative distributions, so
     predicting "medium" for a "high" costs less than predicting "low". Proper as well."""
     return ((probs.cumsum(-1) - target.cumsum(-1)) ** 2).sum(dim=-1) / max(probs.shape[-1] - 1, 1)
+
+
+def ordinal_rps(logp: torch.Tensor, target: torch.Tensor, order: list[tuple[int, ...]]) -> torch.Tensor:
+    """RPS per row, over the levels re-sorted into their natural order (the prompt may show
+    them shuffled). Rows with no ordinal order contribute 0."""
+    out = []
+    for i, idx in enumerate(order):
+        if not idx:
+            out.append(logp.new_zeros(()))
+            continue
+        ix = torch.tensor(idx, device=logp.device)
+        out.append(ranked_probability_score(logp[i, ix].exp()[None], target[i, ix][None])[0])
+    return torch.stack(out)

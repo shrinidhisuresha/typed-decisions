@@ -136,6 +136,12 @@ def build_mixture(names: Sequence[str], seed: int = 0, null_share: float = 0.1,
                 for s in balanced(src, raw, coarse, per_class, relabel=src.collapse.get,
                                   seed=seed):
                     rows.append(_score(s.state, s.label, coarse, rng, src.score_questions))
+        elif src.shape == "soft_noul":
+            # Stratified over the label buckets (deciles of P(yes)), so ambiguous rows are
+            # not drowned by the clear-cut majority.
+            for s in balanced(src, raw, src.labels, per_class, seed=seed):
+                rows.append(Row(s.state, NoulQuestion(rng.choice(src.noul_questions)),
+                                (s.soft, 1.0 - s.soft)))
         else:
             raise ValueError(f"{name}: unknown shape {src.shape!r}")
     rows += [_null(r) for r in rows if rng.random() < null_share]
@@ -148,11 +154,20 @@ class Encoded:
     input_ids: list[int]
     label_ids: list[int]
     target: list[float]
+    # Ordinal levels in their natural order, as positions in label_ids; set for Score rows
+    # so the loss can add RPS. Empty otherwise.
+    ordinal: tuple[int, ...] = ()
 
 
 def encode(row: Row, tokenizer) -> Encoded:
     """The exact prompt the client renders for one question, ordering=None (the row's
     options are already shuffled), plus the label tokens the client would read."""
     text = render_prefix(row.state) + render_branch(row.question)
-    labels = allocate_labels(declared_options(row.question), tokenizer)
-    return Encoded(tokenizer.encode(text), [l.token_id for l in labels], list(row.target))
+    options = declared_options(row.question)
+    labels = allocate_labels(options, tokenizer)
+    ordinal: tuple[int, ...] = ()
+    if isinstance(row.question, ScoreQuestion):
+        values = row.question.criteria
+        ordinal = tuple(sorted(range(len(options)), key=lambda i: values[options[i]]))
+    return Encoded(tokenizer.encode(text), [l.token_id for l in labels], list(row.target),
+                   ordinal)

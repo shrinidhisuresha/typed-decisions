@@ -104,3 +104,23 @@ def test_score_rows_keep_ordinal_values_when_shuffled():
         row = _score("x", "mid", levels, rng, ("How much?",))
         assert row.question.criteria == {"low": 1.0, "mid": 2.0, "high": 3.0} | row.question.criteria
         assert declared_options(row.question)[row.target.index(1.0)] == "mid"
+
+
+def test_ordinal_rps_reads_levels_in_natural_order_not_display_order():
+    from typed_decisions.finetune.loss import ordinal_rps
+    # displayed as [high, low, mid]; natural order is low(1), mid(2), high(0)
+    probs = torch.tensor([[0.0, 0.0, 1.0]])            # all mass on "mid"
+    target = torch.tensor([[1.0, 0.0, 0.0]])           # truth "high"
+    near = ordinal_rps(probs.clamp_min(1e-9).log(), target, [(1, 2, 0)])
+    far = ordinal_rps(torch.tensor([[0.0, 1.0, 0.0]]).clamp_min(1e-9).log(), target, [(1, 2, 0)])
+    assert near < far
+    assert ordinal_rps(probs.log(), target, [()]) == 0
+
+
+def test_encode_marks_score_rows_ordinal():
+    import random
+    from typed_decisions.finetune.data import _score
+    row = _score("x", "mid", ["low", "mid", "high"], random.Random(3), ("How much?",))
+    enc = encode(row, FakeTokenizer())
+    options = declared_options(row.question)
+    assert [options[i] for i in enc.ordinal] == ["low", "mid", "high"]

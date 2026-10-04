@@ -20,7 +20,7 @@ dependencies = ["httpx>=0.27"]
 cpu = ["torch>=2.2", "transformers>=4.40"]
 cuda = ["torch>=2.2", "transformers>=4.40"]
 apple = ["mlx-lm>=0.31", "torch>=2.2", "transformers>=4.40"]   # Apple silicon: MLX + retriever
-train = ["torch>=2.2", "transformers>=4.40"]                    # distillation heads
+train = ["torch>=2.2", "transformers>=4.40", "peft>=0.12", "pyarrow>=14"]  # heads, fine-tuning
 local = ["torch>=2.2", "transformers>=4.40"]                    # older name for cpu
 mlx = ["mlx-lm>=0.31"]                                          # older name, MLX only
 dev = ["pytest>=8"]

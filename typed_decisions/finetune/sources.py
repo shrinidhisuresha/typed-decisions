@@ -10,6 +10,8 @@ Licences (check before publishing any adapter trained on these):
   ag_news     academic, non-commercial use     -> experiment only
   enron_spam  public (released by FERC)
   subj, sst   no explicit licence (Pang & Lee; Stanford) -> experiment only
+  amazon      Amazon reviews (multilingual corpus licence, non-commercial) -> experiment only
+  civil       Civil Comments / Jigsaw, CC0
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ class Source:
     text: Callable[[dict], str]
     label: Callable[[dict], str | None]
     labels: list[str]
-    shape: str                        # "choice" | "noul" | "score"
+    shape: str                        # "choice" | "noul" | "score" | "soft_noul"
     per_class: int
     license: str
     noul_questions: tuple[str, ...] = ()        # for shape "noul": phrasings whose "yes" is labels[0]
@@ -43,6 +45,9 @@ class Source:
     collapse: dict[str, str] = field(default_factory=dict)   # optional coarser legend
     choice_questions: tuple[str, ...] = ()      # for shape "choice"; default: data.CHOICE_INSTRUCTIONS
     about_questions: tuple[str, ...] = ()       # Noul "is it {x}?" over a choice source's labels
+    # For shape "soft_noul": P(yes) for a row, e.g. the fraction of annotators who said yes.
+    # Training on it teaches hedging where people genuinely disagree.
+    soft: Callable[[dict], float] | None = None
 
 
 def _jsonl(dataset: str, file: str, cache_dir: str | Path) -> list[dict]:
@@ -52,13 +57,32 @@ def _jsonl(dataset: str, file: str, cache_dir: str | Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def _parquet(dataset: str, file: str, cache_dir: str | Path) -> list[dict]:
+    import pyarrow.parquet as pq   # in the `train` extra
+
+    path = Path(cache_dir) / "raw" / dataset.replace("/", "__") / Path(file).name
+    if not path.exists():
+        _fetch(RESOLVE.format(dataset=dataset, file=file), path, None)
+    return pq.read_table(path).to_pylist()
+
+
 def rows_for(source: Source, cache_dir: str | Path = "data") -> list[dict]:
     if not source.file:
         return read_rows(download_csv(source.dataset, cache_dir))
+    if source.file.endswith(".parquet"):
+        return _parquet(source.dataset, source.file, cache_dir)
     return _jsonl(source.dataset, source.file, cache_dir)
 
 
 SST5 = ["very negative", "negative", "neutral", "positive", "very positive"]
+STARS = ["1 star", "2 stars", "3 stars", "4 stars", "5 stars"]
+TOXICITY = ["not toxic", "somewhat toxic", "toxic", "very toxic"]
+
+
+def _toxicity_level(t: float) -> str:
+    return TOXICITY[0 if t < 0.1 else 1 if t < 0.4 else 2 if t < 0.7 else 3]
+
+
 TREC = ["abbreviation", "entity", "description", "person", "location", "number"]
 
 SOURCES = {s.name: s for s in [
@@ -95,11 +119,28 @@ SOURCES = {s.name: s for s in [
            score_questions=("How positive is this review?", "Rate the sentiment of this review."),
            collapse={"very negative": "negative", "negative": "negative", "neutral": "neutral",
                      "positive": "positive", "very positive": "positive"}),
+    Source("amazon", "SetFit/amazon_reviews_multi_en", "validation.jsonl", lambda r: r["text"],
+           lambda r: STARS[int(r["label"])], STARS, "score", 150, "non-commercial",
+           score_questions=("How satisfied was this customer?",
+                            "How many stars would this review give?"),
+           collapse={"1 star": "dissatisfied", "2 stars": "dissatisfied", "3 stars": "mixed",
+                     "4 stars": "satisfied", "5 stars": "satisfied"}),
+    Source("civil", "google/civil_comments", "data/validation-00000-of-00001.parquet",
+           lambda r: r["text"], lambda r: _toxicity_level(r["toxicity"]), TOXICITY, "score",
+           150, "CC0",
+           score_questions=("How toxic is this comment?", "How offensive is this comment?")),
+    Source("civil_soft", "google/civil_comments", "data/validation-00000-of-00001.parquet",
+           lambda r: r["text"], lambda r: f"decile {min(int(r['toxicity'] * 10), 9)}",
+           [f"decile {i}" for i in range(10)], "soft_noul", 60, "CC0",
+           noul_questions=("Is this comment toxic?", "Would readers find this comment offensive?"),
+           soft=lambda r: float(r["toxicity"])),
 ]}
 
 MIXTURES = {
     "banking77": ["banking77"],
     "mix1": ["banking77", "ag_news", "trec", "enron_spam", "subj", "sst2", "sst5"],
+    "mix2": ["banking77", "ag_news", "trec", "enron_spam", "subj", "sst2", "sst5", "amazon",
+             "civil", "civil_soft"],
 }
 
 
@@ -107,6 +148,7 @@ MIXTURES = {
 class Labelled:
     state: str
     label: str
+    soft: float | None = None
 
 
 def balanced(source: Source, rows: list[dict], labels: list[str], per_class: int,
@@ -121,5 +163,6 @@ def balanced(source: Source, rows: list[dict], labels: list[str], per_class: int
         label = relabel(raw) if raw is not None else None
         text = (source.text(row) or "").strip()
         if label in buckets and text and len(buckets[label]) < per_class:
-            buckets[label].append(Labelled(text[:MAX_CHARS], label))
+            buckets[label].append(Labelled(text[:MAX_CHARS], label,
+                                           source.soft(row) if source.soft else None))
     return [s for b in buckets.values() for s in b]
