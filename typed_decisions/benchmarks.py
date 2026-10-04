@@ -8,6 +8,7 @@ tasks add real labels for Score and Noul, and a Choice past the 26-letter alphab
     tickets_incident  Noul                     same dataset, `type == Incident`
     bitext_category   Choice, 11 categories    bitext/Bitext-customer-support-...   (CDLA-Sharing 1.0)
     bitext_intent     Choice, 27 intents       same dataset -- exercises sequence scoring
+    bitext_telco_category Choice, 7 categories Bitext telco (CDLA-Sharing 1.0) -- held out from fine-tuning
     banking77         Choice, 77 intents       PolyAI BANKING77 (CC BY 4.0) -- REAL user queries
 
 Both datasets are synthetic (LLM-generated), so treat results as a controlled benchmark,
@@ -43,11 +44,16 @@ FILES = {
     "Tobi-Bueck/customer-support-tickets": "aa_dataset-tickets-multi-lang-5-2-50-version.csv",
     "bitext/Bitext-customer-support-llm-chatbot-training-dataset":
         "Bitext_Sample_Customer_Support_Training_Dataset_27K_responses-v11.csv",
+    "bitext/Bitext-telco-llm-chatbot-training-dataset":
+        "bitext-telco-llm-chatbot-training-dataset.csv",
 }
 
 TICKETS = "Tobi-Bueck/customer-support-tickets"
 BITEXT = "bitext/Bitext-customer-support-llm-chatbot-training-dataset"
 BANKING = "PolyAI/banking77"
+TELCO = "bitext/Bitext-telco-llm-chatbot-training-dataset"
+TELCO_CATEGORIES = ["BILLING", "COMPLAINTS", "CONSUMPTION", "CONTACT", "PAYMENT", "SERVICES",
+                    "SUBSCRIPTION"]
 # The 77 categories, as they appear in the dataset (generated from it, not typed).
 BANKING77 = [
     "Refund_not_showing_up",
@@ -195,6 +201,11 @@ TASKS = {t.name: t for t in [
          lambda r: r["intent"].replace("_", " ") if r.get("intent") in INTENTS else None,
          lambda r: r["instruction"], "CDLA-Sharing 1.0",
          "27 options: scored by option text (sequence scoring)"),
+    Task("bitext_telco_category", TELCO,
+         ChoiceQuestion("What is this telecom customer's message about?",
+                        [c.lower() for c in TELCO_CATEGORIES]),
+         lambda r: r["category"].lower() if r.get("category") in TELCO_CATEGORIES else None,
+         lambda r: r["instruction"], "CDLA-Sharing 1.0"),
     Task("banking77", BANKING,
          ChoiceQuestion("What does the bank customer want?",
                         [c.replace("_", " ") for c in BANKING77]),
