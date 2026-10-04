@@ -8,7 +8,7 @@ app_file: app.py
 pinned: false
 license: apache-2.0
 models:
-- <hf-user>/banking77-intent-probe-minilm
+- Shrinidhisuresha/banking77-intent-probe-minilm
 - sentence-transformers/all-MiniLM-L6-v2
 datasets:
 - PolyAI/banking77

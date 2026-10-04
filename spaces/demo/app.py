@@ -14,13 +14,22 @@ from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 from transformers import AutoModel, AutoTokenizer
 
-REPO = os.environ.get("PROBE_REPO", "<hf-user>/banking77-intent-probe-minilm")
+REPO = os.environ.get("PROBE_REPO", "Shrinidhisuresha/banking77-intent-probe-minilm")
 
 cfg = json.load(open(hf_hub_download(REPO, "config.json")))
 probe = load_file(hf_hub_download(REPO, "probe.safetensors"))
 tok = AutoTokenizer.from_pretrained(cfg["base_model"])
 enc = AutoModel.from_pretrained(cfg["base_model"]).eval()
-torch.set_num_threads(max(1, os.cpu_count() or 1))
+torch.set_num_threads(1)  # cpu_count() reports host cores, not the container quota; one thread is fastest here
+
+try:  # free-tier Gradio Spaces run on ZeroGPU, which refuses to start without a GPU function
+    import spaces
+
+    @spaces.GPU
+    def _gpu_stub():  # never called: the probe is measured on CPU
+        pass
+except (ImportError, AttributeError):  # no ZeroGPU runtime (local runs)
+    pass
 
 
 @torch.inference_mode()

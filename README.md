@@ -6,6 +6,10 @@ answer. Answers are read straight from model logits, or from a small head traine
 labels. There is no text generation and no parsing, and an answer outside the allowed set is
 impossible.
 
+**Try it:** [live demo on Hugging Face Spaces](https://huggingface.co/spaces/Shrinidhisuresha/typed-decisions-demo)
+· [BANKING77 probe model](https://huggingface.co/Shrinidhisuresha/banking77-intent-probe-minilm)
+· [PyPI](https://pypi.org/project/typed-decisions/)
+
 ## Results
 
 All numbers come from scripts in `examples/`, on an Apple M5 Pro.
