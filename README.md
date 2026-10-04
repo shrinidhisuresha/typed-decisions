@@ -9,6 +9,7 @@ impossible.
 **Try it:** [live demo on Hugging Face Spaces](https://huggingface.co/spaces/Shrinidhisuresha/typed-decisions-demo)
 · [BANKING77 probe model](https://huggingface.co/Shrinidhisuresha/banking77-intent-probe-minilm)
 · [PyPI](https://pypi.org/project/typed-decisions/)
+· [launch post](docs/blog/2026-10-04-typed-decisions.md)
 
 ## Results
 
