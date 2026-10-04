@@ -47,7 +47,11 @@ def predictions(client: Decider, task, rows) -> list[Prediction]:
 
 def backend(base: str, adapter: str | None, device: str, kind: str = "transformers"):
     if kind == "mlx":
+        import mlx.core as mx
         from mlx_lm import load as mlx_load
+        # Without a cap MLX keeps every freed buffer for reuse; forking a prompt cache per
+        # branch then grows the process past 14 GB over a few hundred rows.
+        mx.set_cache_limit(1 << 30)
         from ..backend_impls.mlx import MLXBackend
         model, tokenizer = mlx_load(base, adapter_path=adapter)
         return MLXBackend(model, tokenizer)
