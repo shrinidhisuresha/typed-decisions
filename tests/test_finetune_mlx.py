@@ -92,3 +92,15 @@ def test_lora_steps_lower_the_loss_and_train_only_the_adapter():
         opt.update(model, grads)
         mx.eval(model.trainable_parameters(), opt.state)
     assert loss.item() < first.item() * 0.5
+
+
+def test_confidence_penalty_lowers_the_loss_only_on_penalised_rows():
+    model, tok = tiny()
+    batch = encoded(tok, n=2)
+    args = collate(batch, tok.eos_token_id)
+    ordinal = [e.ordinal for e in batch]
+    base = loss_fn(model, *args, ordinal, 0.0)
+    off = loss_fn(model, *args, ordinal, 0.0, mx.array([0.0, 0.0]), 0.5)
+    on = loss_fn(model, *args, ordinal, 0.0, mx.array([1.0, 1.0]), 0.5)
+    assert mx.allclose(base, off)
+    assert on.item() < base.item()

@@ -124,3 +124,22 @@ def test_encode_marks_score_rows_ordinal():
     enc = encode(row, FakeTokenizer())
     options = declared_options(row.question)
     assert [options[i] for i in enc.ordinal] == ["low", "mid", "high"]
+
+
+def test_confidence_penalty_marks_only_noul_and_score_rows():
+    import random
+    from typed_decisions.finetune.data import _choice, _noul, _score
+    rng = random.Random(0)
+    tok = FakeTokenizer()
+    assert not encode(_choice("x", LABELS[0], LABELS, rng, (3, 5)), tok).penalised
+    assert encode(_noul("x", LABELS[0], LABELS, rng), tok).penalised
+    assert encode(_score("x", "mid", ["low", "mid", "high"], rng, ("How?",)), tok).penalised
+
+
+def test_entropy_is_highest_for_the_uniform_distribution_and_ignores_padding():
+    from typed_decisions.finetune.loss import entropy
+    mask = torch.tensor([[True, True, False]])
+    flat = entropy(torch.log(torch.tensor([[0.5, 0.5, 1e-9]])), mask)
+    sharp = entropy(torch.log(torch.tensor([[0.9, 0.1, 1e-9]])), mask)
+    assert math.isclose(float(flat), math.log(2), rel_tol=1e-5)
+    assert sharp < flat

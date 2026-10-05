@@ -157,6 +157,9 @@ class Encoded:
     # Ordinal levels in their natural order, as positions in label_ids; set for Score rows
     # so the loss can add RPS. Empty otherwise.
     ordinal: tuple[int, ...] = ()
+    # Noul and Score rows: the shapes that came out overconfident on unseen domains, and the
+    # only rows the confidence penalty (loss.entropy) applies to.
+    penalised: bool = False
 
 
 def encode(row: Row, tokenizer) -> Encoded:
@@ -170,4 +173,4 @@ def encode(row: Row, tokenizer) -> Encoded:
         values = row.question.criteria
         ordinal = tuple(sorted(range(len(options)), key=lambda i: values[options[i]]))
     return Encoded(tokenizer.encode(text), [l.token_id for l in labels], list(row.target),
-                   ordinal)
+                   ordinal, isinstance(row.question, (NoulQuestion, ScoreQuestion)))

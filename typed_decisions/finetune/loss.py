@@ -42,3 +42,12 @@ def ordinal_rps(logp: torch.Tensor, target: torch.Tensor, order: list[tuple[int,
         ix = torch.tensor(idx, device=logp.device)
         out.append(ranked_probability_score(logp[i, ix].exp()[None], target[i, ix][None])[0])
     return torch.stack(out)
+
+
+def entropy(logp: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """H(p) over each row's real options. The confidence penalty subtracts beta * H from the
+    loss (Pereyra et al., 2017). That makes the objective deliberately NOT proper: it trades a
+    little in-distribution sharpness for less overconfidence on domains never trained on,
+    which is where the held-out Noul and Score tasks broke."""
+    safe = logp.masked_fill(~mask, 0.0)
+    return -(safe.exp() * safe).sum(dim=-1)
