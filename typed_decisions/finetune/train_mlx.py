@@ -58,7 +58,8 @@ def answer_logits(model, ids, last):
     return text.lm_head(hidden)
 
 
-def loss_fn(model, ids, last, labels, mask, target, ordinal, rps_weight):
+def loss_fn(model, ids, last, labels, mask, target, ordinal, rps_weight, penalised=None,
+            penalty=0.0):
     picked = answer_logits(model, ids, last).astype(mx.float32)
     picked = mx.take_along_axis(picked, labels, axis=1)
     picked = mx.where(mask, picked, -mx.inf)
@@ -74,6 +75,11 @@ def loss_fn(model, ids, last, labels, mask, target, ordinal, rps_weight):
             p, t = mx.exp(logp[i][ix]), target[i][ix]
             rps.append(((mx.cumsum(p) - mx.cumsum(t)) ** 2).sum() / max(len(idx) - 1, 1))
         loss = loss + rps_weight * mx.stack(rps)
+    if penalty and penalised is not None:
+        # confidence penalty on Noul/Score rows only; see loss.entropy
+        safe = mx.where(mask, logp, 0.0)
+        h = -(mx.exp(safe) * safe * mask).sum(axis=1)
+        loss = loss - penalty * penalised * h
     return loss.mean()
 
 
@@ -89,6 +95,8 @@ def main(argv=None) -> None:
     parser.add_argument("--mixture", choices=sorted(MIXTURES))
     parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--rps-weight", type=float, default=0.0)
+    parser.add_argument("--confidence-penalty", type=float, default=0.0,
+                        help="subtract this times H(p) on Noul and Score rows")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--micro-batch", type=int, default=1)
@@ -159,7 +167,9 @@ def main(argv=None) -> None:
             for m in range(0, len(batch), args.micro_batch):
                 part = batch[m:m + args.micro_batch]
                 loss, g = value_and_grad(model, *collate(part, pad_id),
-                                         [e.ordinal for e in part], args.rps_weight)
+                                         [e.ordinal for e in part], args.rps_weight,
+                                         mx.array([float(e.penalised) for e in part]),
+                                         args.confidence_penalty)
                 w = len(part) / len(batch)
                 g = tree_map(lambda x: x * w, g)
                 grads = g if grads is None else tree_map(mx.add, grads, g)
@@ -181,7 +191,8 @@ def main(argv=None) -> None:
         "fine_tune_type": "lora", "num_layers": len(model.layers), "lora_parameters": lora}))
     (out / "train.json").write_text(json.dumps({
         "base": args.base, "mixture": args.mixture, "scale": args.scale,
-        "rps_weight": args.rps_weight, "rows": len(rows), "kept": len(encoded),
+        "rps_weight": args.rps_weight, "confidence_penalty": args.confidence_penalty,
+        "rows": len(rows), "kept": len(encoded),
         "max_tokens": args.max_tokens, "epochs": args.epochs,
         "batch": args.batch, "micro_batch": args.micro_batch, "lr": args.lr, "rank": args.rank,
         "seed": args.seed, "steps": step, "seconds": round(time.perf_counter() - start, 1),
