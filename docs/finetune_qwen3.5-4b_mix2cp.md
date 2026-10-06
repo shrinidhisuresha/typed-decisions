@@ -61,3 +61,18 @@ peak 13.2 GB.
 - **bitext_category regressed by 7 points** (0.800 → 0.727), although Choice rows carry no penalty. Every run so far is a
   single seed, so this may be run-to-run variance rather than an effect of the penalty. Two more seeds would settle it
   (about 7 h at 4B).
+
+### Seeds (2026-10-07): the recipe is unstable
+
+Seeds 1 and 2 of exactly this run **collapsed** right after the learning-rate warmup peaked (1e-4 at step ~43):
+
+| seed | loss at step 40 → 60 | end | result |
+|---|---|---|---|
+| 0 | 0.80 → 0.85 | 0.43–0.50 | the table above |
+| 1 | 0.85 → 1.22 | 1.06 | near-uniform on every task: acc at chance, fitted T=20 (`finetune_qwen3.5-4b_mix2cp_s1.md`) |
+| 2 | 0.94 → 1.46 | stopped at step 140 | the same collapse |
+
+2 of 3 seeds fail, so the seed-0 numbers are not a reliable estimate of this recipe. Its 7-point bitext_category drop may be
+a partial version of the same failure. The likely mechanism: one large update at peak LR, after which the
+entropy penalty makes the uniform answer a stable basin, because it maximises H on Noul/Score rows. Gradient clipping at 1.0 did
+not prevent it. A rerun needs a lower LR, the penalty switched on only after warmup, and an abort when loss jumps.
