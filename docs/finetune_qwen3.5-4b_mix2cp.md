@@ -76,3 +76,19 @@ Seeds 1 and 2 of exactly this run **collapsed** right after the learning-rate wa
 a partial version of the same failure. The likely mechanism: one large update at peak LR, after which the
 entropy penalty makes the uniform answer a stable basin, because it maximises H on Noul/Score rows. Gradient clipping at 1.0 did
 not prevent it. A rerun needs a lower LR, the penalty switched on only after warmup, and an abort when loss jumps.
+
+### Stability fix, 200-step test (2026-10-10)
+
+Seeds 1 and 2 (the two that collapsed) rerun for 200 steps with `--lr 5e-5 --penalty-start -1` (penalty from the end of
+warmup, step 42) `--abort-loss 1.1`. `--max-steps` now truncates the full-length schedule, so the warmup and peak happen
+exactly as in a full run.
+
+| seed | 20 | 40 | 60 | 80 | 100 | 140 | 200 |
+|---|---|---|---|---|---|---|---|
+| 1, original (lr 1e-4, penalty from 0) | 0.86 | 0.85 | **1.22** | 1.15 | 1.09 | 1.08 | collapsed |
+| 1, fixed | 0.95 | 0.95 | 0.67 | 0.77 | 0.77 | 0.60 | 0.72 |
+| 2, original | 0.73 | 0.94 | **1.46** | 1.50 | 1.34 | 1.39 | stopped |
+| 2, fixed | 0.93 | 0.94 | 0.94 | 0.78 | 0.61 | 0.57 | 0.58 |
+
+Both seeds get through the LR peak and fall to the range seed 0 reached; neither tripped the abort. Losses at
+steps 20–60 are the starting level before learning, not a jump.

@@ -97,6 +97,13 @@ def main(argv=None) -> None:
     parser.add_argument("--rps-weight", type=float, default=0.0)
     parser.add_argument("--confidence-penalty", type=float, default=0.0,
                         help="subtract this times H(p) on Noul and Score rows")
+    parser.add_argument("--penalty-start", type=int, default=0,
+                        help="step at which the confidence penalty switches on; -1 means "
+                             "the end of warmup. With the penalty on from step 0, 2 of 3 4B seeds "
+                             "collapsed to uniform answers at the LR peak")
+    parser.add_argument("--abort-loss", type=float, default=0.0,
+                        help="after warmup, stop with exit code 3 if the 20-step mean loss "
+                             "exceeds this (the collapse signature); 0 disables")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--micro-batch", type=int, default=1)
@@ -142,10 +149,12 @@ def main(argv=None) -> None:
     print(f"trainable params: {n_train:,}", flush=True)
     model.train()
 
+    # The schedule always spans the full run; --max-steps only stops early, so a short
+    # stability test sees exactly the LR curve (warmup, peak) the full run would.
     steps = math.ceil(len(encoded) / args.batch) * args.epochs
-    if args.max_steps:
-        steps = min(steps, args.max_steps)
+    stop_at = min(steps, args.max_steps) if args.max_steps else steps
     warmup = max(1, steps // 20)
+    penalty_start = warmup if args.penalty_start < 0 else args.penalty_start
     schedule = optim.join_schedules(
         [optim.linear_schedule(args.lr / warmup, args.lr, warmup),
          optim.linear_schedule(args.lr, 0.0, steps - warmup)], [warmup])
@@ -160,7 +169,7 @@ def main(argv=None) -> None:
         order = list(range(len(encoded)))
         rng.shuffle(order)
         for i in range(0, len(order), args.batch):
-            if step >= steps:
+            if step >= stop_at:
                 break
             batch = [encoded[j] for j in order[i:i + args.batch]]
             total, grads = 0.0, None
@@ -169,7 +178,8 @@ def main(argv=None) -> None:
                 loss, g = value_and_grad(model, *collate(part, pad_id),
                                          [e.ordinal for e in part], args.rps_weight,
                                          mx.array([float(e.penalised) for e in part]),
-                                         args.confidence_penalty)
+                                         args.confidence_penalty if step >= penalty_start
+                                         else 0.0)
                 w = len(part) / len(batch)
                 g = tree_map(lambda x: x * w, g)
                 grads = g if grads is None else tree_map(mx.add, grads, g)
@@ -179,8 +189,12 @@ def main(argv=None) -> None:
             mx.eval(model.trainable_parameters(), opt.state)
             history.append(total)
             step += 1
-            if step % 20 == 0 or step == steps:
-                recent = sum(history[-20:]) / len(history[-20:])
+            recent = sum(history[-20:]) / len(history[-20:])
+            if args.abort_loss and step > warmup + 20 and recent > args.abort_loss:
+                print(f"ABORT step {step}: 20-step mean loss {recent:.4f} > {args.abort_loss} "
+                      "after warmup (collapse)", flush=True)
+                raise SystemExit(3)
+            if step % 20 == 0 or step == stop_at:
                 print(f"step {step}/{steps}  loss {recent:.4f}  "
                       f"{(time.perf_counter() - start) / step:.2f} s/step  "
                       f"peak {mx.get_peak_memory() / 2**30:.1f} GB", flush=True)
@@ -192,7 +206,7 @@ def main(argv=None) -> None:
     (out / "train.json").write_text(json.dumps({
         "base": args.base, "mixture": args.mixture, "scale": args.scale,
         "rps_weight": args.rps_weight, "confidence_penalty": args.confidence_penalty,
-        "rows": len(rows), "kept": len(encoded),
+        "penalty_start": penalty_start, "warmup": warmup, "rows": len(rows), "kept": len(encoded),
         "max_tokens": args.max_tokens, "epochs": args.epochs,
         "batch": args.batch, "micro_batch": args.micro_batch, "lr": args.lr, "rank": args.rank,
         "seed": args.seed, "steps": step, "seconds": round(time.perf_counter() - start, 1),
