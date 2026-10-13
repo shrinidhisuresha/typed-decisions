@@ -104,3 +104,30 @@ def test_confidence_penalty_lowers_the_loss_only_on_penalised_rows():
     on = loss_fn(model, *args, ordinal, 0.0, mx.array([1.0, 1.0]), 0.5)
     assert mx.allclose(base, off)
     assert on.item() < base.item()
+
+
+@pytest.mark.parametrize("T", [5, 64, 70])
+def test_chunked_gated_delta_matches_the_per_token_loop(T):
+    from mlx_lm.models.gated_delta import gated_delta_ops
+    from typed_decisions.finetune.gdn_chunked import gated_delta_ops_chunked
+    mx.random.seed(1)
+    B, Hk, Hv, D = 1, 2, 4, 32
+    q = mx.random.normal((B, T, Hk, D)) * 0.1
+    k = mx.random.normal((B, T, Hk, D))
+    k = k / mx.linalg.norm(k, axis=-1, keepdims=True)
+    v = mx.random.normal((B, T, Hv, D))
+    g = mx.random.uniform(0.8, 1.0, (B, T, Hv))
+    beta = mx.random.uniform(0.1, 0.9, (B, T, Hv))
+    w = mx.random.normal((B, T, Hv, D))
+
+    def loss(fn):
+        return lambda *a: (fn(*a, None, None)[0] * w).sum()
+
+    yo, so = gated_delta_ops(q, k, v, g, beta, None, None)
+    yc, sc = gated_delta_ops_chunked(q, k, v, g, beta, None, None)
+    # The upstream PR's own tolerance for betas this large: the chunked solve reorders fp32 sums.
+    assert mx.allclose(yo, yc, rtol=1e-2, atol=1e-3) and mx.allclose(so, sc, rtol=1e-2, atol=1e-3)
+    go = mx.grad(loss(gated_delta_ops), argnums=(0, 1, 2, 3, 4))(q, k, v, g, beta)
+    gc = mx.grad(loss(gated_delta_ops_chunked), argnums=(0, 1, 2, 3, 4))(q, k, v, g, beta)
+    for a, b in zip(go, gc):
+        assert mx.allclose(a, b, rtol=1e-2, atol=5e-3)

@@ -48,6 +48,25 @@ def collate(batch: list[Encoded], pad_id: int):
             mx.array(target, dtype=mx.float32))
 
 
+def use_chunked_gdn() -> None:
+    """Route mlx_lm's training-mode Gated DeltaNet recurrence through gdn_chunked: 64 tokens per
+    dense step instead of one Python-loop step per token. Single-token and vector-gated calls
+    keep the original path."""
+    from mlx_lm.models import gated_delta
+
+    from .gdn_chunked import gated_delta_ops_chunked
+
+    original = getattr(gated_delta, "_typed_decisions_original_ops", gated_delta.gated_delta_ops)
+
+    def dispatch(q, k, v, g, beta, state=None, mask=None):
+        if g.ndim == 4 or q.shape[1] == 1:
+            return original(q, k, v, g, beta, state, mask)
+        return gated_delta_ops_chunked(q, k, v, g, beta, state, mask)
+
+    gated_delta._typed_decisions_original_ops = original
+    gated_delta.gated_delta_ops = dispatch
+
+
 def answer_logits(model, ids, last):
     """Logits at each row's `Answer:` position only. Running the full model would build a
     (batch, seq, 248k) logit tensor plus its gradient -- the 4B smoke run swapped 23 GB."""
@@ -112,6 +131,9 @@ def main(argv=None) -> None:
     parser.add_argument("--null-share", type=float, default=0.1)
     parser.add_argument("--max-steps", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--gdn", choices=["chunked", "loop"], default="chunked",
+                        help="training path for Qwen3.5 linear attention: chunk-parallel "
+                             "(gdn_chunked) or mlx_lm's per-token loop")
     parser.add_argument("--memory-limit-gb", type=float, default=10.0,
                         help="MLX allocation cap (soft: MLX may still exceed it)")
     parser.add_argument("--max-tokens", type=int, default=256,
@@ -123,6 +145,8 @@ def main(argv=None) -> None:
     mx.set_memory_limit(int(args.memory_limit_gb * 2**30))
     mx.set_cache_limit(2 * 2**30)
     mx.random.seed(args.seed)
+    if args.gdn == "chunked":
+        use_chunked_gdn()
     model, tok = mlx_load(args.base)
     tokenizer = _Tokenizer(tok)
     pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
@@ -206,7 +230,7 @@ def main(argv=None) -> None:
     (out / "train.json").write_text(json.dumps({
         "base": args.base, "mixture": args.mixture, "scale": args.scale,
         "rps_weight": args.rps_weight, "confidence_penalty": args.confidence_penalty,
-        "penalty_start": penalty_start, "warmup": warmup, "rows": len(rows), "kept": len(encoded),
+        "gdn": args.gdn, "penalty_start": penalty_start, "warmup": warmup, "rows": len(rows), "kept": len(encoded),
         "max_tokens": args.max_tokens, "epochs": args.epochs,
         "batch": args.batch, "micro_batch": args.micro_batch, "lr": args.lr, "rank": args.rank,
         "seed": args.seed, "steps": step, "seconds": round(time.perf_counter() - start, 1),
