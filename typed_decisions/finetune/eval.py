@@ -26,7 +26,10 @@ from ..gate import GatePolicy, compare
 from ..types import NoulQuestion
 
 PER_CLASS = {"bitext_category": 40, "tickets_incident": 150, "tickets_priority": 50,
-             "bitext_telco_category": 40}
+             "bitext_telco_category": 40,
+             # real-label held-out domains (CLINC150, MASSIVE, GoEmotions, Measuring Hate Speech)
+             "clinc_domain": 120, "massive_scenario": 56, "goemotions_emotional": 600,
+             "mhs_hate": 400}
 CONFIGS = {
     "raw": Calibration(),
     "posthoc": Calibration(permutations=4, contextual=True),

@@ -11,6 +11,13 @@ tasks add real labels for Score and Noul, and a Choice past the 26-letter alphab
     bitext_telco_category Choice, 7 categories Bitext telco (CDLA-Sharing 1.0) -- held out from fine-tuning
     banking77         Choice, 77 intents       PolyAI BANKING77 (CC BY 4.0) -- REAL user queries
 
+Real-label held-out domains for the fine-tuning eval (none appear in its training mixture):
+
+    clinc_domain      Choice, 10 domains       CLINC150 test split (CC BY 3.0) -- real queries
+    massive_scenario  Choice, 18 scenarios     MASSIVE en-US test (CC BY 4.0) -- voice requests
+    goemotions_emotional Noul                  GoEmotions (Apache-2.0) -- Reddit, single-label rows
+    mhs_hate          Score, 3 levels          Measuring Hate Speech (CC BY 4.0) -- IRT hate score
+
 Both datasets are synthetic (LLM-generated), so treat results as a controlled benchmark,
 not a proxy for real traffic. The data is NOT redistributed here: each dataset's CSV is
 downloaded once from Hugging Face into data/raw/ (gitignored), then sampled locally,
@@ -47,6 +54,25 @@ FILES = {
     "bitext/Bitext-telco-llm-chatbot-training-dataset":
         "bitext-telco-llm-chatbot-training-dataset.csv",
 }
+
+# Held-out real-label datasets that are not single CSVs: rows come from READERS below.
+CLINC = "clinc/oos-eval"
+MASSIVE = "mteb/amazon_massive_scenario"
+GOEMOTIONS = "google-research-datasets/go_emotions"
+MHS = "ucberkeley-dlab/measuring-hate-speech"
+CLINC_DOMAINS = ["banking", "credit cards", "kitchen and dining", "home", "auto and commute",
+                 "travel", "utility", "work", "small talk", "meta"]
+MASSIVE_SCENARIOS = ["alarm", "audio", "calendar", "cooking", "datetime", "email", "general",
+                     "iot", "lists", "music", "news", "play", "qa", "recommendation", "social",
+                     "takeaway", "transport", "weather"]
+GOEMOTIONS_NEUTRAL = 27            # index of "neutral" in the simplified label set
+MHS_LEVELS = {"not hateful": 1.0, "somewhat hateful": 2.0, "hateful": 3.0}
+
+
+def _mhs_level(score: float) -> str:
+    # The dataset's own guidance: > 0.5 is approximately hate speech, < -1 counter/supportive.
+    return "hateful" if score > 0.5 else "not hateful" if score < -1 else "somewhat hateful"
+
 
 TICKETS = "Tobi-Bueck/customer-support-tickets"
 BITEXT = "bitext/Bitext-customer-support-llm-chatbot-training-dataset"
@@ -206,6 +232,23 @@ TASKS = {t.name: t for t in [
                         [c.lower() for c in TELCO_CATEGORIES]),
          lambda r: r["category"].lower() if r.get("category") in TELCO_CATEGORIES else None,
          lambda r: r["instruction"], "CDLA-Sharing 1.0"),
+    Task("clinc_domain", CLINC,
+         ChoiceQuestion("Which area is this request about?", CLINC_DOMAINS),
+         lambda r: r["domain"], lambda r: r["text"], "CC BY 3.0",
+         "CLINC150 test split, in-scope queries only; intent mapped to its domain"),
+    Task("massive_scenario", MASSIVE,
+         ChoiceQuestion("What is this voice-assistant request about?", MASSIVE_SCENARIOS),
+         lambda r: r["label_text"] if r["label_text"] in MASSIVE_SCENARIOS else None,
+         lambda r: r["text"], "CC BY 4.0"),
+    Task("goemotions_emotional", GOEMOTIONS,
+         NoulQuestion("Does this comment express an emotion, rather than being neutral?"),
+         lambda r: ("no" if r["labels"] == [GOEMOTIONS_NEUTRAL] else "yes")
+         if len(r["labels"]) == 1 else None,
+         lambda r: r["text"], "Apache-2.0", "single-label rows only"),
+    Task("mhs_hate", MHS,
+         ScoreQuestion("How hateful is this comment?", MHS_LEVELS),
+         lambda r: _mhs_level(r["hate_speech_score"]), lambda r: r["text"], "CC BY 4.0",
+         "one row per comment; levels from the IRT hate_speech_score"),
     Task("banking77", BANKING,
          ChoiceQuestion("What does the bank customer want?",
                         [c.replace("_", " ") for c in BANKING77]),
@@ -276,6 +319,55 @@ def read_rows(paths) -> list[dict]:
     return rows
 
 
+def _fetch_once(url: str, path: Path, client: httpx.Client | None) -> Path:
+    if not path.exists():
+        _fetch(url, path, client)
+    return path
+
+
+def _clinc(cache_dir: Path, client) -> list[dict]:
+    base = "https://raw.githubusercontent.com/clinc/oos-eval/master/data/"
+    folder = cache_dir / "raw" / "clinc__clinc_oos"
+    full = json.loads(_fetch_once(base + "data_full.json", folder / "data_full.json", client).read_text())
+    domains = json.loads(_fetch_once(base + "domains.json", folder / "domains.json", client).read_text())
+    to_domain = {intent: d.replace("_", " ") for d, intents in domains.items() for intent in intents}
+    return [{"text": text, "domain": to_domain[intent]} for text, intent in full["test"]]
+
+
+def _massive(cache_dir: Path, client) -> list[dict]:
+    import gzip
+    path = _fetch_once(RESOLVE.format(dataset=MASSIVE, file="test/en.json.gz"),
+                       cache_dir / "raw" / "mteb__amazon_massive_scenario" / "test-en.json.gz", client)
+    with gzip.open(path, "rt") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def _parquet(dataset: str, file: str, local: str, cache_dir: Path, client, columns=None) -> list[dict]:
+    import pyarrow.parquet as pq   # in the `train` extra
+    path = _fetch_once(RESOLVE.format(dataset=dataset, file=file),
+                       cache_dir / "raw" / dataset.replace("/", "__") / local, client)
+    return pq.read_table(path, columns=columns).to_pylist()
+
+
+def _goemotions(cache_dir: Path, client) -> list[dict]:
+    return _parquet(GOEMOTIONS, "simplified/train-00000-of-00001.parquet", "simplified-train.parquet",
+                    cache_dir, client)
+
+
+def _mhs(cache_dir: Path, client) -> list[dict]:
+    rows = _parquet(MHS, "measuring-hate-speech.parquet", "measuring-hate-speech.parquet", cache_dir,
+                    client, columns=["comment_id", "hate_speech_score", "text"])
+    one: dict = {}
+    for r in rows:                 # one row per annotator; the IRT score is per comment
+        one.setdefault(r["comment_id"], r)
+    return list(one.values())
+
+
+READERS: dict[str, Callable[[Path, httpx.Client | None], list[dict]]] = {
+    CLINC: _clinc, MASSIVE: _massive, GOEMOTIONS: _goemotions, MHS: _mhs,
+}
+
+
 def load(task_name: str, per_class: int, seed: int = 0, cache_dir: str | Path = "data",
          client: httpx.Client | None = None) -> list[Sample]:
     """Cached sample(); the cache key includes everything that changes the sample."""
@@ -283,7 +375,9 @@ def load(task_name: str, per_class: int, seed: int = 0, cache_dir: str | Path = 
     path = Path(cache_dir) / f"{task_name}-{per_class}-{seed}.json"
     if path.exists():
         return [Sample(**s) for s in json.loads(path.read_text())]
-    rows = sample(task, per_class, read_rows(download(task.dataset, cache_dir, client)), seed)
+    raw = (READERS[task.dataset](Path(cache_dir), client) if task.dataset in READERS
+           else read_rows(download(task.dataset, cache_dir, client)))
+    rows = sample(task, per_class, raw, seed)
     path.write_text(json.dumps([{"state": s.state, "label": s.label} for s in rows]))
     return rows
 

@@ -34,7 +34,9 @@ import numpy as np
 from ..benchmarks import TASKS
 from ..types import ScoreQuestion
 
-TASK_NAMES = ["bitext_category", "bitext_telco_category", "tickets_incident", "tickets_priority"]
+SYNTHETIC = ["bitext_category", "bitext_telco_category", "tickets_incident", "tickets_priority"]
+REAL = ["clinc_domain", "massive_scenario", "goemotions_emotional", "mhs_hate"]
+TASK_NAMES = SYNTHETIC
 FLOOR = 1e-6
 
 
