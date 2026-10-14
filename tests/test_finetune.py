@@ -143,3 +143,28 @@ def test_entropy_is_highest_for_the_uniform_distribution_and_ignores_padding():
     sharp = entropy(torch.log(torch.tensor([[0.9, 0.1, 1e-9]])), mask)
     assert math.isclose(float(flat), math.log(2), rel_tol=1e-5)
     assert sharp < flat
+
+
+def test_sord_targets_decay_with_ordinal_distance():
+    from typed_decisions.finetune.data import sord
+    levels = ["low", "mid", "high", "top"]
+    t = sord(levels, "mid", 2.0)
+    assert math.isclose(sum(t.values()), 1.0)
+    assert t["low"] == pytest.approx(t["high"])
+    assert t["mid"] > t["low"] > t["top"]
+    assert sord(levels, "mid", 0.0) == {"low": 0.0, "mid": 1.0, "high": 0.0, "top": 0.0}
+
+
+def test_directional_score_legends_are_always_ordered():
+    import random
+    from typed_decisions.finetune.data import _score
+    levels = ["low", "mid", "high"]
+    rng = random.Random(0)
+    seen = set()
+    for _ in range(100):
+        row = _score("x", "mid", levels, rng, ("How?",), order="directional", alpha=1.0)
+        shown = declared_options(row.question)
+        assert shown in (levels, levels[::-1])
+        seen.add(tuple(shown))
+        assert row.target[shown.index("mid")] == max(row.target)
+    assert len(seen) == 2

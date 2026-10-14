@@ -78,22 +78,29 @@ def answer_logits(model, ids, last):
 
 
 def loss_fn(model, ids, last, labels, mask, target, ordinal, rps_weight, penalised=None,
-            penalty=0.0):
+            penalty=0.0, unimodal=0.0):
     picked = answer_logits(model, ids, last).astype(mx.float32)
     picked = mx.take_along_axis(picked, labels, axis=1)
     picked = mx.where(mask, picked, -mx.inf)
     logp = picked - mx.logsumexp(picked, axis=1, keepdims=True)
     loss = -(target * mx.where(mask, logp, 0.0)).sum(axis=1)
-    if rps_weight:
-        rps = []
+    if rps_weight or unimodal:
+        rps, uni = [], []
         for i, idx in enumerate(ordinal):
             if not idx:
                 rps.append(mx.array(0.0))
+                uni.append(mx.array(0.0))
                 continue
             ix = mx.array(list(idx))
             p, t = mx.exp(logp[i][ix]), target[i][ix]
             rps.append(((mx.cumsum(p) - mx.cumsum(t)) ** 2).sum() / max(len(idx) - 1, 1))
-        loss = loss + rps_weight * mx.stack(rps)
+            # Unimodality around the true level (natural order): probability may only fall
+            # moving away from it. Hinge on each adjacent pair that slopes the wrong way.
+            y = int(mx.argmax(t).item())
+            step = p[1:] - p[:-1]                        # p[i+1] - p[i]
+            up = mx.arange(len(idx) - 1) < y             # left of y: must rise
+            uni.append(mx.where(up, mx.maximum(-step, 0), mx.maximum(step, 0)).sum())
+        loss = loss + rps_weight * mx.stack(rps) + unimodal * mx.stack(uni)
     if penalty and penalised is not None:
         # confidence penalty on Noul/Score rows only; see loss.entropy
         safe = mx.where(mask, logp, 0.0)
@@ -114,6 +121,14 @@ def main(argv=None) -> None:
     parser.add_argument("--mixture", choices=sorted(MIXTURES))
     parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--rps-weight", type=float, default=0.0)
+    parser.add_argument("--score-order", choices=["shuffle", "directional"], default="shuffle",
+                        help="Score legends: half shuffled (default) or always ordered, random "
+                             "direction")
+    parser.add_argument("--sord-alpha", type=float, default=0.0,
+                        help="soft ordinal targets exp(-alpha*|i-y|) on Score rows; 0 = one-hot")
+    parser.add_argument("--unimodal-weight", type=float, default=0.0,
+                        help="hinge penalty on Score distributions that are not unimodal at the "
+                             "true level")
     parser.add_argument("--confidence-penalty", type=float, default=0.0,
                         help="subtract this times H(p) on Noul and Score rows")
     parser.add_argument("--penalty-start", type=int, default=0,
@@ -153,7 +168,8 @@ def main(argv=None) -> None:
 
     if args.mixture:
         rows = build_mixture(MIXTURES[args.mixture], seed=args.seed, null_share=args.null_share,
-                             scale=args.scale)
+                             scale=args.scale, score_order=args.score_order,
+                             sord_alpha=args.sord_alpha)
         source = f"mixture {args.mixture}"
     else:
         rows = build(load(args.task, args.per_class), TASKS[args.task].labels, seed=args.seed,
@@ -203,7 +219,7 @@ def main(argv=None) -> None:
                                          [e.ordinal for e in part], args.rps_weight,
                                          mx.array([float(e.penalised) for e in part]),
                                          args.confidence_penalty if step >= penalty_start
-                                         else 0.0)
+                                         else 0.0, args.unimodal_weight)
                 w = len(part) / len(batch)
                 g = tree_map(lambda x: x * w, g)
                 grads = g if grads is None else tree_map(mx.add, grads, g)
@@ -230,7 +246,8 @@ def main(argv=None) -> None:
     (out / "train.json").write_text(json.dumps({
         "base": args.base, "mixture": args.mixture, "scale": args.scale,
         "rps_weight": args.rps_weight, "confidence_penalty": args.confidence_penalty,
-        "gdn": args.gdn, "penalty_start": penalty_start, "warmup": warmup, "rows": len(rows), "kept": len(encoded),
+        "gdn": args.gdn, "score_order": args.score_order, "sord_alpha": args.sord_alpha,
+        "unimodal_weight": args.unimodal_weight, "penalty_start": penalty_start, "warmup": warmup, "rows": len(rows), "kept": len(encoded),
         "max_tokens": args.max_tokens, "epochs": args.epochs,
         "batch": args.batch, "micro_batch": args.micro_batch, "lr": args.lr, "rank": args.rank,
         "seed": args.seed, "steps": step, "seconds": round(time.perf_counter() - start, 1),

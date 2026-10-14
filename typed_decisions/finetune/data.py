@@ -8,6 +8,7 @@ appear here (eval.py), because zero-shot calibration on new schemas is the whole
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from typing import Sequence
@@ -67,16 +68,35 @@ def _native_noul(state, label: str, labels: Sequence[str], rng: random.Random,
     return Row(state, question, (1.0, 0.0) if label == yes else (0.0, 1.0))
 
 
+def sord(levels: Sequence[str], label: str, alpha: float) -> dict[str, float]:
+    """Soft ordinal target (SORD, Diaz & Marathe 2019): mass decays as exp(-alpha * |i - y|) with
+    ordinal distance from the true level. alpha <= 0 gives the hard one-hot target."""
+    y = levels.index(label)
+    if alpha <= 0:
+        return {lvl: float(i == y) for i, lvl in enumerate(levels)}
+    w = [math.exp(-alpha * abs(i - y)) for i in range(len(levels))]
+    return {lvl: wi / sum(w) for lvl, wi in zip(levels, w)}
+
+
 def _score(state, label: str, levels: Sequence[str], rng: random.Random,
-           questions: Sequence[str]) -> Row:
-    """An ordinal legend, value i+1 for level i. Shown in natural order half the time and
-    shuffled otherwise, so position carries no information about the level."""
+           questions: Sequence[str], order: str = "shuffle", alpha: float = 0.0) -> Row:
+    """An ordinal legend, value i+1 for level i.
+
+    order="shuffle": natural order half the time, otherwise shuffled, so position carries no
+    information about the level. order="directional": always ordered, ascending or descending
+    at random. Random rubric order was the most damaging perturbation in LLM-judge studies
+    (arXiv 2506.22316), while direction alone was neutral, so this keeps the scale readable and
+    still breaks the link between a level and its position."""
     shown = list(levels)
-    if rng.random() < 0.5:
+    if order == "directional":
+        if rng.random() < 0.5:
+            shown.reverse()
+    elif rng.random() < 0.5:
         rng.shuffle(shown)
     question = ScoreQuestion(rng.choice(questions),
                              {lvl: float(levels.index(lvl) + 1) for lvl in shown})
-    return Row(state, question, tuple(1.0 if lvl == label else 0.0 for lvl in shown))
+    target = sord(levels, label, alpha)
+    return Row(state, question, tuple(target[lvl] for lvl in shown))
 
 
 def _null(row: Row) -> Row:
@@ -104,7 +124,8 @@ def build(samples: Sequence, labels: Sequence[str], seed: int = 0, noul_share: f
 
 def build_mixture(names: Sequence[str], seed: int = 0, null_share: float = 0.1,
                   about_share: float = 0.3, k_range: tuple[int, int] = (2, 12),
-                  cache_dir: str = "data", scale: float = 1.0) -> list[Row]:
+                  cache_dir: str = "data", scale: float = 1.0, score_order: str = "shuffle",
+                  sord_alpha: float = 0.0) -> list[Row]:
     """Rows from every source in `names`, each in its own question shape(s)."""
     from .sources import SOURCES, balanced, rows_for
 
@@ -130,12 +151,14 @@ def build_mixture(names: Sequence[str], seed: int = 0, null_share: float = 0.1,
             # Two legends from one dataset: the full scale, and the collapsed one, each
             # sampled balanced on ITS OWN levels so the null-state prior stays uniform.
             for s in balanced(src, raw, src.labels, per_class, seed=seed):
-                rows.append(_score(s.state, s.label, src.labels, rng, src.score_questions))
+                rows.append(_score(s.state, s.label, src.labels, rng, src.score_questions,
+                                   score_order, sord_alpha))
             if src.collapse:
                 coarse = list(dict.fromkeys(src.collapse.values()))
                 for s in balanced(src, raw, coarse, per_class, relabel=src.collapse.get,
                                   seed=seed):
-                    rows.append(_score(s.state, s.label, coarse, rng, src.score_questions))
+                    rows.append(_score(s.state, s.label, coarse, rng, src.score_questions,
+                                       score_order, sord_alpha))
         elif src.shape == "soft_noul":
             # Stratified over the label buckets (deciles of P(yes)), so ambiguous rows are
             # not drowned by the clear-cut majority.

@@ -131,3 +131,18 @@ def test_chunked_gated_delta_matches_the_per_token_loop(T):
     gc = mx.grad(loss(gated_delta_ops_chunked), argnums=(0, 1, 2, 3, 4))(q, k, v, g, beta)
     for a, b in zip(go, gc):
         assert mx.allclose(a, b, rtol=1e-2, atol=5e-3)
+
+
+def test_unimodal_penalty_charges_only_wrong_slopes_and_survives_autodiff():
+    import random
+    from typed_decisions.finetune.data import _score
+    model, tok = tiny()
+    row = _score("a fairly urgent message", "mid", ["low", "mid", "high", "top"],
+                 random.Random(0), ("How urgent?",), order="directional", alpha=1.0)
+    e = encode(row, _Tokenizer(tok))
+    args = collate([e], tok.eos_token_id)
+    base = loss_fn(model, *args, [e.ordinal], 0.0)
+    with_uni = loss_fn(model, *args, [e.ordinal], 0.0, None, 0.0, 1.0)
+    assert with_uni.item() >= base.item()
+    loss, grads = nn.value_and_grad(model, loss_fn)(model, *args, [e.ordinal], 1.0, None, 0.0, 1.0)
+    assert mx.isfinite(loss).item()
